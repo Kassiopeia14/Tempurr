@@ -7,8 +7,9 @@
 
 import SwiftUI
 
+// MARK: - App Entry
 @main
-struct TempurrApp: App {
+struct TempApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
