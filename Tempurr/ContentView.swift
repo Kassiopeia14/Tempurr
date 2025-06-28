@@ -1,10 +1,3 @@
-//
-//  ContentView.swift
-//  Tempurr
-//
-//  Created by Kassiopeia on 21/06/2025.
-//
-
 import SwiftUI
 import Charts
 
@@ -21,50 +14,111 @@ struct TemperatureHistory: Codable, Identifiable {
 
 struct ContentView: View {
     @State private var readings: [TemperatureHistory] = []
+    @State private var minDate: Date? = nil
+    @State private var maxDate: Date? = nil
+    @State private var statusMessage: String? = nil
 
-    var minDate: Date? {
-            readings.map { $0.time }.min()
-        }
-
-        var maxDate: Date? {
-            readings.map { $0.time }.max()
-        }
-    
     var body: some View {
         NavigationView {
-            VStack{
-            if let minDate, let maxDate {
-                 
-                        Text("minDate: \(minDate.formatted(date: .abbreviated, time: .shortened))")
-                        Text("maxDate: \(maxDate.formatted(date: .abbreviated, time: .shortened))")
-                            .font(.headline)
-                    
-                
-                                Chart(readings) { reading in
-                                    LineMark(
-                                        x: .value("Time", reading.time),
-                                        y: .value("Temperature", reading.temp)
-                                    )
-                                    .interpolationMethod(.catmullRom)
-                                    .foregroundStyle(.blue)
+            VStack {
+                if let minDate, let maxDate {
+                    Text("\(minDate.formatted(date: .abbreviated, time: .omitted)) - \(maxDate.formatted(date: .abbreviated, time: .omitted))")
+                        .font(.headline)
+
+                    let sortedReadings = readings.sorted { $0.time < $1.time }
+
+                    Chart {
+                        ForEach(sortedReadings){
+                            reading in
+                            LineMark(
+                                x: .value("Time", reading.time),
+                                y: .value("Temperature", reading.temp)
+                            )
+                            .interpolationMethod(.catmullRom)
+                            .foregroundStyle(.green)
+                        }
+                        
+                        RuleMark(y: .value("Lower Bound", 2))
+                                .lineStyle(StrokeStyle(lineWidth: 1, dash: [5]))
+                                .foregroundStyle(.red.opacity(0.6))
+
+                            // Dashed rule at y = 8
+                            RuleMark(y: .value("Upper Bound", 8))
+                                .lineStyle(StrokeStyle(lineWidth: 1, dash: [5]))
+                                .foregroundStyle(.red.opacity(0.6))
+                        
+                    }
+                    .chartXScale(domain: minDate...maxDate)
+                    .chartXAxis {
+                        AxisMarks(values: .automatic) { value in
+                            AxisGridLine()
+                            AxisTick()
+                            AxisValueLabel {
+                                if let date = value.as(Date.self) {
+                                    Text(date.formatted(.dateTime.hour().minute()))
                                 }
-                                .chartXScale(domain: minDate...maxDate)
-                                .frame(height: 200)
-                                .padding()
+                            }
+                        }
+                    }
+                    .frame(height: 200)
+                    .padding()
+                } else {
+                    Text("Loading or no data available")
+                        .padding()
+                }
+
+                Button("Refresh Data") {
+                    Task {
+                        await loadData()
+                    }
+                }
+                .padding()
                 
-                //            List(readings) { reading in
-                //                VStack(alignment: .leading) {
-                //                    Text("Time: \(reading.time.formatted(date: .abbreviated, time: .shortened))")
-                //                    Text("Temp: \(reading.temp, specifier: "%.1f") °C")
-                //                        .font(.headline)
-                //                }
-                //            }
-                //            .navigationTitle("Temperature History")
+                ZStack {
+                    if let message = statusMessage {
+                        Text(message)
+                            .foregroundColor(.green)
+                            .font(.caption)
+                            .transition(.opacity)
+                    }
+                }
+                .frame(height: 20)
             }
-            }
+            .navigationTitle("Temperature History")
         }
         .task {
-            readings = await fetchTemperatureHistory()
+            await loadData()
+        }
+    }
+
+    private func loadData() async {
+        var data = await fetchTemperatureHistory()
+        data.sort { $0.time < $1.time }
+
+        await MainActor.run {
+            readings = data
+            minDate = data.first?.time
+            maxDate = data.last?.time
+            statusMessage = "Updated"
+        }
+
+        // Hide message after delay
+        try? await Task.sleep(nanoseconds: 2_000_000_000)
+        await MainActor.run {
+            statusMessage = nil
+        }
+    }
+}
+
+class InsecureSessionDelegate: NSObject, URLSessionDelegate {
+    func urlSession(_ session: URLSession,
+                    didReceive challenge: URLAuthenticationChallenge,
+                    completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
+        // Always trust the server's certificate (DEV ONLY!)
+        if let serverTrust = challenge.protectionSpace.serverTrust {
+            completionHandler(.useCredential, URLCredential(trust: serverTrust))
+        } else {
+            completionHandler(.cancelAuthenticationChallenge, nil)
         }
     }
 }
@@ -75,17 +129,18 @@ func fetchTemperatureHistory() async -> [TemperatureHistory] {
         return []
     }
 
+    let session = URLSession(configuration: .default, delegate: InsecureSessionDelegate(), delegateQueue: nil)
+
     do {
-        let (data, _) = try await URLSession.shared.data(from: url)
+        let (data, _) = try await session.data(from: url)
 
         print("📦 RAW JSON:")
         print(String(data: data, encoding: .utf8) ?? "Unable to convert to string")
-        
+
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .custom { decoder in
             let container = try decoder.singleValueContainer()
             let dateStr = try container.decode(String.self)
-            
             let trimmed = dateStr.replacingOccurrences(of: #"(\.\d{3})"#, with: "", options: .regularExpression)
 
             let formatter = ISO8601DateFormatter()
@@ -106,4 +161,8 @@ func fetchTemperatureHistory() async -> [TemperatureHistory] {
         print("Error fetching or decoding: \(error)")
         return []
     }
+}
+
+#Preview {
+    ContentView()
 }
